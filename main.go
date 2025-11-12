@@ -17,15 +17,18 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	CertFile string `yaml:"cert"`
-	KeyFile  string `yaml:"key"`
-	Upstream string `yaml:"upstream"`
-	Addr     string `yaml:"addr"`
+	CertFile       string `yaml:"cert"`
+	KeyFile        string `yaml:"key"`
+	Upstream       string `yaml:"upstream"`
+	Addr           string `yaml:"addr"`
+	CFClientID     string `yaml:"cf_client_id"`
+	CFClientSecret string `yaml:"cf_client_secret"`
 }
 
 var (
@@ -33,17 +36,47 @@ var (
 	configFile string
 )
 
+// normalizeCFToken strips common prefixes from Cloudflare token input
+// Accepts formats like: "CF-Access-Client-Id: value", "cf-access-client-id: value", or just "value"
+func normalizeCFToken(input, tokenType string) string {
+	if input == "" {
+		return ""
+	}
+	
+	input = strings.TrimSpace(input)
+	
+	// List of possible prefixes to strip (case-insensitive)
+	prefixes := []string{
+		"cf-access-client-id:",
+		"cf-access-client-secret:",
+		"cf-access-client-id=",
+		"cf-access-client-secret=",
+	}
+	
+	lowerInput := strings.ToLower(input)
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(lowerInput, prefix) {
+			input = strings.TrimSpace(input[len(prefix):])
+			break
+		}
+	}
+	
+	return input
+}
+
 func getConfig() (config *Config, err error) {
 	cfg := Config{}
 	flag.StringVar(&configFile, "c", "", "config file")
 	flag.StringVar(&cfg.Addr, "addr", ":443", "listen address")
 	flag.StringVar(&cfg.CertFile, "cert", "", "path to cert file")
 	flag.StringVar(&cfg.KeyFile, "key", "", "path to key file")
+ 	flag.StringVar(&cfg.CFClientID, "cf-client-id", "", "Cloudflare Access Client ID (optional)")
+ 	flag.StringVar(&cfg.CFClientSecret, "cf-client-secret", "", "Cloudflare Access Client Secret (optional)")
 	flag.BoolVar(&version, "version", false, "print version string and exit")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(),
-			"usage: %s -c [config.yml] [-addr host:port] -cert certfile -key keyfile [-version] upstream\n",
+			"usage: %s -c [config.yml] [-addr host:port] -cert certfile -key keyfile [-cf-client-id value] [-cf-client-secret value] [-version] upstream\n",
 			filepath.Base(os.Args[0]))
 		flag.PrintDefaults()
 		fmt.Fprintln(flag.CommandLine.Output(), "  upstream string\n    \tupstream url")
@@ -72,6 +105,10 @@ func getConfig() (config *Config, err error) {
 		}
 		return &cfg, nil
 	}
+
+	// Normalize Cloudflare tokens
+	cfg.CFClientID = normalizeCFToken(cfg.CFClientID, "id")
+	cfg.CFClientSecret = normalizeCFToken(cfg.CFClientSecret, "secret")
 
 	if flag.NArg() == 1 {
 		cfg.Upstream = flag.Arg(0)
@@ -142,15 +179,45 @@ func _main() error {
 			// explicitly disable User-Agent so it's not set to default value
 			req.Header.Set("User-Agent", "")
 		}
+		
+		// Add Cloudflare Access headers if configured
+		if cfg.CFClientID != "" {
+			req.Header.Set("CF-Access-Client-Id", cfg.CFClientID)
+		}
+		if cfg.CFClientSecret != "" {
+			req.Header.Set("CF-Access-Client-Secret", cfg.CFClientSecret)
+ 		}
+	}
+
+	// Configure transport with aggressive timeouts to detect dead connections faster
+	transport := &http.Transport{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       30 * time.Second,  // Close idle connections after 30s
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DisableKeepAlives:     false,              // Keep connections alive, but...
+		ForceAttemptHTTP2:     true,
 	}
 
 	srv := http.Server{
 		Handler: &httputil.ReverseProxy{
-			Director: director,
+			Director:  director,
+			Transport: transport,
+			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				log.Printf("proxy error: %v (closing idle connections)", err)
+				// Force close idle connections on error - helps recover from network switches
+				transport.CloseIdleConnections()
+				http.Error(w, "Bad Gateway", http.StatusBadGateway)
+			},
 		},
-		Addr: cfg.Addr,
+		Addr:         cfg.Addr,
+		ReadTimeout:  60 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
-
+	
 	done := make(chan struct{})
 	go func() {
 		sig := make(chan os.Signal, 1)
@@ -163,7 +230,7 @@ func _main() error {
 		close(done)
 	}()
 
-	log.Printf("cert-file=%s key-file=%s listen-addr=%s upstream-url=%s", cfg.CertFile, cfg.KeyFile, srv.Addr, upstream.String())
+	log.Printf("cert-file=%s key-file=%s listen-addr=%s upstream-url=%s CF-Access-Client-Id=%s", cfg.CertFile, cfg.KeyFile, srv.Addr, upstream.String(), cfg.CFClientID)
 	if err := srv.ListenAndServeTLS(cfg.CertFile, cfg.KeyFile); err != http.ErrServerClosed {
 		return fmt.Errorf("ListenAndServeTLS: %v", err)
 	}

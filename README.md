@@ -34,6 +34,10 @@ usage: rmfakecloud-proxy [-addr host:port] -cert certfile -key keyfile upstream
         listen address (default ":443")
   -cert string
         path to cert file
+  -cf-client-id string
+        Cloudflare Access Client ID (optional)
+  -cf-client-secret string
+        Cloudflare Access Client Secret (optional)
   -key string
         path to key file
   -c configfile
