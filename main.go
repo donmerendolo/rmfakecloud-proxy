@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -42,9 +41,9 @@ func normalizeCFToken(input, tokenType string) string {
 	if input == "" {
 		return ""
 	}
-	
+
 	input = strings.TrimSpace(input)
-	
+
 	// List of possible prefixes to strip (case-insensitive)
 	prefixes := []string{
 		"cf-access-client-id:",
@@ -52,7 +51,7 @@ func normalizeCFToken(input, tokenType string) string {
 		"cf-access-client-id=",
 		"cf-access-client-secret=",
 	}
-	
+
 	lowerInput := strings.ToLower(input)
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(lowerInput, prefix) {
@@ -60,7 +59,7 @@ func normalizeCFToken(input, tokenType string) string {
 			break
 		}
 	}
-	
+
 	return input
 }
 
@@ -70,8 +69,8 @@ func getConfig() (config *Config, err error) {
 	flag.StringVar(&cfg.Addr, "addr", ":443", "listen address")
 	flag.StringVar(&cfg.CertFile, "cert", "", "path to cert file")
 	flag.StringVar(&cfg.KeyFile, "key", "", "path to key file")
- 	flag.StringVar(&cfg.CFClientID, "cf-client-id", "", "Cloudflare Access Client ID (optional)")
- 	flag.StringVar(&cfg.CFClientSecret, "cf-client-secret", "", "Cloudflare Access Client Secret (optional)")
+	flag.StringVar(&cfg.CFClientID, "cf-client-id", "", "Cloudflare Access Client ID (optional)")
+	flag.StringVar(&cfg.CFClientSecret, "cf-client-secret", "", "Cloudflare Access Client Secret (optional)")
 	flag.BoolVar(&version, "version", false, "print version string and exit")
 
 	flag.Usage = func() {
@@ -179,45 +178,23 @@ func _main() error {
 			// explicitly disable User-Agent so it's not set to default value
 			req.Header.Set("User-Agent", "")
 		}
-		
+
 		// Add Cloudflare Access headers if configured
 		if cfg.CFClientID != "" {
 			req.Header.Set("CF-Access-Client-Id", cfg.CFClientID)
 		}
 		if cfg.CFClientSecret != "" {
 			req.Header.Set("CF-Access-Client-Secret", cfg.CFClientSecret)
- 		}
-	}
-
-	// Configure transport with aggressive timeouts to detect dead connections faster
-	transport := &http.Transport{
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   10,
-		IdleConnTimeout:       30 * time.Second,  // Close idle connections after 30s
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		DisableKeepAlives:     false,              // Keep connections alive, but...
-		ForceAttemptHTTP2:     true,
+		}
 	}
 
 	srv := http.Server{
 		Handler: &httputil.ReverseProxy{
-			Director:  director,
-			Transport: transport,
-			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-				log.Printf("proxy error: %v (closing idle connections)", err)
-				// Force close idle connections on error - helps recover from network switches
-				transport.CloseIdleConnections()
-				http.Error(w, "Bad Gateway", http.StatusBadGateway)
-			},
+			Director: director,
 		},
-		Addr:         cfg.Addr,
-		ReadTimeout:  60 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Addr: cfg.Addr,
 	}
-	
+
 	done := make(chan struct{})
 	go func() {
 		sig := make(chan os.Signal, 1)
