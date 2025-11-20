@@ -46,18 +46,20 @@ function install_proxyservice(){
 cloudurl=$1
 cf_client_id=$2
 cf_client_secret=$3
+client_cert_file=$4
+client_key_file=$5
 echo "Setting cloud sync to: ${cloudurl}"
 workdir=$DESTINATION
 
 # Build ExecStart command with optional CF parameters
 exec_start="$workdir/${BINARY} -cert $workdir/proxy.bundle.crt -key $workdir/proxy.key"
 
-if [ -n "$cf_client_id" ]; then
-    exec_start="$exec_start -cf-client-id \"$cf_client_id\""
+if [ -n "$cf_client_id" ] && [ -n "$cf_client_secret" ]; then
+    exec_start="$exec_start -cf-client-id \"$cf_client_id\" -cf-client-secret \"$cf_client_secret\""
 fi
 
-if [ -n "$cf_client_secret" ]; then
-    exec_start="$exec_start -cf-client-secret \"$cf_client_secret\""
+if [ -n "$client_cert_file" ] && [ -n "$client_key_file" ]; then
+    exec_start="$exec_start -client-cert \"$workdir/$client_cert_file\" -client-key \"$workdir/$client_key_file\""
 fi
 
 exec_start="$exec_start ${cloudurl}"
@@ -237,6 +239,12 @@ function get_cf_credentials(){
     echo "$cf_id|$cf_secret"
 }
 
+function get_client_certificates(){
+    read -p "Enter path to client certificate file (optional, press Enter to skip): " client_cert
+    read -p "Enter path to client key file (optional, press Enter to skip): " client_key
+    echo "$client_cert|$client_key"
+}
+
 function doinstall(){
     echo "Extracting embedded binary..."
     unpack
@@ -253,8 +261,11 @@ function doinstall(){
     cf_creds=$(get_cf_credentials)
     cf_client_id=$(echo "$cf_creds" | cut -d'|' -f1)
     cf_client_secret=$(echo "$cf_creds" | cut -d'|' -f2)
+    client_creds=$(get_client_certificates)
+    client_cert_file=$(echo "$client_creds" | cut -d'|' -f1)
+    client_key_file=$(echo "$client_creds" | cut -d'|' -f2)
     
-    install_proxyservice "$url" "$cf_client_id" "$cf_client_secret"
+    install_proxyservice "$url" "$cf_client_id" "$cf_client_secret" "$client_cert_file" "$client_key_file"
 
     echo "Patching /etc/hosts"
     patch_hosts

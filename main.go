@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -28,6 +29,8 @@ type Config struct {
 	Addr           string `yaml:"addr"`
 	CFClientID     string `yaml:"cf_client_id"`
 	CFClientSecret string `yaml:"cf_client_secret"`
+	ClientCertFile string `yaml:"client_cert"`
+	ClientKeyFile  string `yaml:"client_key"`
 }
 
 var (
@@ -71,11 +74,13 @@ func getConfig() (config *Config, err error) {
 	flag.StringVar(&cfg.KeyFile, "key", "", "path to key file")
 	flag.StringVar(&cfg.CFClientID, "cf-client-id", "", "Cloudflare Access Client ID (optional)")
 	flag.StringVar(&cfg.CFClientSecret, "cf-client-secret", "", "Cloudflare Access Client Secret (optional)")
+	flag.StringVar(&cfg.ClientCertFile, "client-cert", "", "path to client cert file for mTLS (optional)")
+	flag.StringVar(&cfg.ClientKeyFile, "client-key", "", "path to client key file for mTLS (optional)")
 	flag.BoolVar(&version, "version", false, "print version string and exit")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(),
-			"usage: %s -c [config.yml] [-addr host:port] -cert certfile -key keyfile [-cf-client-id value] [-cf-client-secret value] [-version] upstream\n",
+			"usage: %s -c [config.yml] [-addr host:port] -cert certfile -key keyfile [-client-cert file] [-client-key file] [-cf-client-id value] [-cf-client-secret value] [-version] upstream\n",
 			filepath.Base(os.Args[0]))
 		flag.PrintDefaults()
 		fmt.Fprintln(flag.CommandLine.Output(), "  upstream string\n    \tupstream url")
@@ -179,18 +184,35 @@ func _main() error {
 			req.Header.Set("User-Agent", "")
 		}
 
-		// Add Cloudflare Access headers if configured
-		if cfg.CFClientID != "" {
+		if cfg.CFClientID != "" && cfg.CFClientSecret != "" {
 			req.Header.Set("CF-Access-Client-Id", cfg.CFClientID)
-		}
-		if cfg.CFClientSecret != "" {
 			req.Header.Set("CF-Access-Client-Secret", cfg.CFClientSecret)
 		}
 	}
 
+	var transport *http.Transport
+	if cfg.ClientCertFile != "" && cfg.ClientKeyFile != "" {
+		clientCert, err := tls.LoadX509KeyPair(cfg.ClientCertFile, cfg.ClientKeyFile)
+		if err != nil {
+			return fmt.Errorf("failed to load client certificate: %v", err)
+		}
+
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{clientCert},
+		}
+
+		transport = &http.Transport{
+			TLSClientConfig: tlsConfig,
+		}
+		log.Printf("mTLS enabled with client-cert=%s client-key=%s", cfg.ClientCertFile, cfg.ClientKeyFile)
+	} else {
+		transport = http.DefaultTransport.(*http.Transport)
+	}
+
 	srv := http.Server{
 		Handler: &httputil.ReverseProxy{
-			Director: director,
+			Director:  director,
+			Transport: transport,
 		},
 		Addr: cfg.Addr,
 	}
@@ -207,7 +229,14 @@ func _main() error {
 		close(done)
 	}()
 
-	log.Printf("cert-file=%s key-file=%s listen-addr=%s upstream-url=%s CF-Access-Client-Id=%s", cfg.CertFile, cfg.KeyFile, srv.Addr, upstream.String(), cfg.CFClientID)
+	log.Printf("cert-file=%s key-file=%s listen-addr=%s upstream-url=%s", cfg.CertFile, cfg.KeyFile, srv.Addr, upstream.String())
+	if cfg.CFClientID != "" && cfg.CFClientSecret != "" {
+		log.Printf("cf-client-id=%s cf-client-secret=%s", cfg.CFClientID, strings.Repeat("*", len(cfg.CFClientSecret)))
+	}
+	if cfg.ClientCertFile != "" && cfg.ClientKeyFile != "" {
+		log.Printf("client-cert=%s client-key=%s", cfg.ClientCertFile, cfg.ClientKeyFile)
+	}
+
 	if err := srv.ListenAndServeTLS(cfg.CertFile, cfg.KeyFile); err != http.ErrServerClosed {
 		return fmt.Errorf("ListenAndServeTLS: %v", err)
 	}
