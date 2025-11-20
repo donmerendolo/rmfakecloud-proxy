@@ -316,7 +316,7 @@ case $1 in
             cf_client_secret=$(echo "$cf_creds" | cut -d'|' -f2)
         fi
 
-        install_proxyservice "$url" "$cf_client_id" "$cf_client_secret"
+        install_proxyservice "$url" "$cf_client_id" "$cf_client_secret" "$client_cert_file" "$client_key_file"
         ;;
 
      * )
@@ -326,9 +326,8 @@ rmFakeCloud reverse proxy installer
 
 Usage:
 
-install [cloudurl] [cf-client-id] [cf-client-secret]
+install [cloudurl] [cf-client-id] [cf-client-secret] [client-cert-file] [client-key-file]
     installs and asks for cloud url and optional Cloudflare credentials
-    CF credentials can be provided in various formats (with or without headers)
 
 uninstall
     uninstall, removes everything
@@ -336,9 +335,8 @@ uninstall
 gencert
     generate certificates
 
-setcloud [cloudurl] [cf-client-id] [cf-client-secret]
+setcloud [cloudurl] [cf-client-id] [cf-client-secret] [client-cert-file] [client-key-file]
     changes the cloud address and optional Cloudflare credentials
-    CF credentials can be provided in various formats (with or without headers)
 
 EOF
         ;;
